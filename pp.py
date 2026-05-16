@@ -5,9 +5,6 @@
 
 import sys
 
-class ReverseRequest(Exception):
-    """Raised when a REVERSECODE token is encountered at the top level."""
-
 
 def tokenize(source):
     """
@@ -330,33 +327,21 @@ def run(tokens):
                 # An ELSE token without a preceding IF is illegal.
                 raise RuntimeError("Unexpected ELSE without matching IF")
 
-            # ---------- REVERSECODE (peepee) ----------
-            elif ttype == "REVERSECODE":
-                if not top_level:
-                    raise SyntaxError("REVERSECODE can only appear at the top level")
-                # Signal the top‑level runner to reverse the token list and restart.
-                raise ReverseRequest
-
             # ---------- Anything else ----------
             else:
                 # For example, a stray literal that wasn't consumed by a command.
                 # We simply skip it.
                 ip += 1
 
-    # The top‑level runner catches ReverseRequest and restarts from the beginning.
-    while True:
-        try:
-            _execute(tokens, variables, top_level=True)
-            break   # normal termination
-        except ReverseRequest:
-            # Find the first REVERSECODE token in the global token list and remove it.
-            for i, (tt, _) in enumerate(tokens):
-                if tt == "REVERSECODE":
-                    del tokens[i]
-                    break
-            # Reverse the whole program and restart.
-            tokens.reverse()
-            # Variables are kept; execution resumes from the top.
+    # ---- pp67 reversal rule ----
+    # After tokenisation, check the very first token.
+    if tokens and tokens[0][0] == "REVERSECODE":
+        del tokens[0]               # remove the REVERSECODE marker
+        # run tokens forwards as normal
+    else:
+        tokens.reverse()            # run the program backwards
+
+    _execute(tokens, variables, top_level=True)
 
 
 if __name__ == "__main__":
