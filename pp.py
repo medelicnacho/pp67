@@ -274,13 +274,9 @@ def run(tokens):
                 if name_tok[0] != "LITERAL" or val_tok[0] != "LITERAL":
                     raise RuntimeError("Invalid variable definition")
                 name = name_tok[1]
-                # If the value looks like a number, store it as an integer,
-                # otherwise store the raw string.
-                try:
-                    value = int(val_tok[1])
-                except ValueError:
-                    value = val_tok[1]
-                scope[name] = value
+                # Use resolve_value so that `ding dong y x`
+                # copies the current value of `x`, not the literal string "x".
+                scope[name] = resolve_value(val_tok[1])
                 ip += 3
 
             # ---------- WHILELOOP ((())) ----------
