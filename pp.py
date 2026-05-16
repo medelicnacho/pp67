@@ -100,6 +100,124 @@ def run(tokens):
     # OOP support: store class blueprints keyed by class name
     class_defs = {}
 
+    def _build_statements(tokens):
+        """
+        Group the flat token list into top-level statements.
+        Each statement is itself a flat list of tokens that describes
+        exactly one complete construct (keyword, its operands, and any
+        attached { } block(s) including nested braces).
+
+        This grouping is needed for correct statement-level reversal.
+        """
+        ip = 0
+        stmts = []
+        while ip < len(tokens):
+            start = ip
+            tt = tokens[ip][0]
+            ip += 1  # move past the keyword token
+
+            # Determine how this keyword must be parsed.
+            if tt == "PRINT":
+                ops = 1
+                block = False
+                else_ = False
+            elif tt == "VARIABLE":
+                ops = 2
+                block = False
+                else_ = False
+            elif tt == "WHILELOOP":
+                ops = 3
+                block = True
+                else_ = False
+            elif tt == "FORLOOP":
+                ops = 1
+                block = True
+                else_ = False
+            elif tt == "IF":
+                ops = 3
+                block = True
+                else_ = True
+            elif tt == "CLASSDEF":
+                ops = 1
+                block = True
+                else_ = False
+            elif tt == "FUNCDEF":
+                ops = 1
+                block = True
+                else_ = False
+            elif tt == "INSTANTIATE":
+                ops = 2
+                block = False
+                else_ = False
+            elif tt == "SNIFF":
+                ops = 2
+                block = False
+                else_ = False
+            elif tt == "HUMP":
+                ops = 2
+                block = False
+                else_ = False
+            elif tt == "LOCALREVERSE":
+                # Gather everything up to the matching closing LOCALREVERSE.
+                depth = 1
+                while ip < len(tokens) and depth > 0:
+                    if tokens[ip][0] == "LOCALREVERSE":
+                        depth -= 1
+                    ip += 1
+                if depth != 0:
+                    raise RuntimeError("Unclosed LOCALREVERSE")
+                stmts.append(tokens[start:ip])
+                continue
+            else:
+                # A stray token that should never appear at the top level;
+                # keep it as a harmless single-token statement.
+                stmts.append([tokens[start]])
+                continue
+
+            # Consume the operands.
+            for _ in range(ops):
+                if ip >= len(tokens):
+                    raise RuntimeError(f"Not enough operands for {tt}")
+                ip += 1
+
+            # Consume the mandatory block, if any.
+            if block:
+                if ip >= len(tokens) or tokens[ip][0] != "BLOCKOPEN":
+                    raise RuntimeError(f"Expected {{ after {tt}")
+                depth = 1
+                ip += 1  # skip the opening {
+                while ip < len(tokens) and depth > 0:
+                    if tokens[ip][0] == "BLOCKOPEN":
+                        depth += 1
+                    elif tokens[ip][0] == "BLOCKCLOSE":
+                        depth -= 1
+                    ip += 1
+                if depth != 0:
+                    raise RuntimeError(f"Unmatched {{ for {tt}")
+
+            # If the keyword supports an optional ELSE branch, consume it now.
+            if else_:
+                if ip < len(tokens) and tokens[ip][0] == "ELSE":
+                    ip += 1  # skip the ELSE token
+                    if ip >= len(tokens) or tokens[ip][0] != "BLOCKOPEN":
+                        raise RuntimeError("Expected { after ELSE")
+                    depth = 1
+                    ip += 1
+                    while ip < len(tokens) and depth > 0:
+                        if tokens[ip][0] == "BLOCKOPEN":
+                            depth += 1
+                        elif tokens[ip][0] == "BLOCKCLOSE":
+                            depth -= 1
+                        ip += 1
+                    if depth != 0:
+                        raise RuntimeError("Unmatched { for ELSE")
+
+            # All tokens from `start` up to (but not including) `ip` form
+            # one complete statement.
+            stmts.append(tokens[start:ip])
+
+        return stmts
+
     def _execute(block_tokens, scope, top_level=False):
         """
         Walk through a list of tokens and execute them one by one.
@@ -510,15 +628,18 @@ def run(tokens):
                 # We simply skip it.
                 ip += 1
 
-    # ---- pp67 reversal rule ----
-    # After tokenisation, check the very first token.
+    # ---- pp67 reversal rule (statement-level) ----
     if tokens and tokens[0][0] == "REVERSECODE":
         del tokens[0]               # remove the REVERSECODE marker
-        # run tokens forwards as normal
+        final_tokens = tokens       # run forwards: keep the original order
     else:
-        tokens.reverse()            # run the program backwards
+        # Group top-level tokens into statements, reverse the statement order,
+        # and then flatten back into a single token list.
+        stmts = _build_statements(tokens)
+        stmts.reverse()
+        final_tokens = [tok for stmt in stmts for tok in stmt]
 
-    _execute(tokens, variables, top_level=True)
+    _execute(final_tokens, variables, top_level=True)
 
 
 if __name__ == "__main__":
