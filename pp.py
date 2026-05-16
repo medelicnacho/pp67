@@ -5,6 +5,10 @@
 
 import sys
 
+class ReverseRequest(Exception):
+    """Raised when a REVERSECODE token is encountered at the top level."""
+
+
 def tokenize(source):
     """
     Convert pp67 source text into a list of token tuples.
@@ -12,6 +16,7 @@ def tokenize(source):
     Each token is a pair: (type, value).
     Recognised token types:
         PRINT, WHILELOOP, IF, ELSE, VARIABLE, FORLOOP,
+        REVERSECODE,
         BLOCKOPEN, BLOCKCLOSE,
         EQUALS, NOTEQUALS, GREATERTHAN, LESSTHAN,
         LITERAL  (everything else)
@@ -20,9 +25,11 @@ def tokenize(source):
     If a literal looks like a plain number, we subtract 1 from it
     before storing it in the token list.  This is a quirk of pp67.
     """
-    # Multi-word keyword "ding dong" is merged into a single token
-    # so the later simple split() can find it.
+    # Multi-word keywords are merged into single tokens so the later
+    # simple split() can find them.
     source = source.replace("ding dong", "dingdong")
+    source = source.replace("))<>>((", "forloop")
+    source = source.replace("deeznutz", "EQUALS")
 
     result = []
     # Split the source text on any whitespace to get individual tokens.
@@ -38,8 +45,12 @@ def tokenize(source):
             result.append(("ELSE", token))
         elif token == "dingdong":
             result.append(("VARIABLE", token))
-        elif token == "peepee":
+        elif token == "forloop":
             result.append(("FORLOOP", token))
+        elif token == "EQUALS":
+            result.append(("EQUALS", token))
+        elif token == "peepee":
+            result.append(("REVERSECODE", token))
         elif token == "{":
             result.append(("BLOCKOPEN", token))
         elif token == "}":
@@ -70,17 +81,18 @@ def run(tokens):
     Execute the tokenised pp67 program.
 
     We use a helper _execute that can be called recursively for
-    blocks inside IF/ELSE.
+    blocks inside IF/ELSE, WHILELOOP and FORLOOP.
     """
     # variables = dictionary that holds all pp67 variables (global scope)
     variables = {}
 
-    def _execute(block_tokens, scope):
+    def _execute(block_tokens, scope, top_level=False):
         """
         Walk through a list of tokens and execute them one by one.
 
         block_tokens : the list of tokens for the current block
         scope        : a dictionary of variable values visible here
+        top_level    : True when this is the top‑level invocation.
         """
         ip = 0   # instruction pointer – where we are in the token list
 
@@ -139,15 +151,98 @@ def run(tokens):
                 scope[name] = value
                 ip += 3
 
-            # ---------- FORLOOP (peepee) ----------
-            elif ttype == "FORLOOP":
-                # FORLOOP is recognised but not yet implemented.
-                ip += 1
-
             # ---------- WHILELOOP ((())) ----------
             elif ttype == "WHILELOOP":
-                # WHILELOOP is recognised but not yet implemented.
-                ip += 1
+                # The condition consumes the next three tokens:
+                #   left operand, comparison operator, right operand
+                if ip + 3 >= len(block_tokens):
+                    raise RuntimeError("WHILELOOP missing condition")
+                left_tok  = block_tokens[ip + 1]
+                op_tok    = block_tokens[ip + 2]
+                right_tok = block_tokens[ip + 3]
+
+                if left_tok[0] != "LITERAL" or right_tok[0] != "LITERAL":
+                    raise RuntimeError("Invalid condition operands")
+                ip += 4  # move instruction pointer past the condition tokens
+
+                # The WHILE body must be surrounded by { ... }
+                if ip >= len(block_tokens) or block_tokens[ip][0] != "BLOCKOPEN":
+                    raise RuntimeError("Expected { after WHILE condition")
+                ip += 1  # skip the opening {
+                start_body = ip
+
+                # Find the matching closing } for the WHILE body.
+                depth = 1
+                while ip < len(block_tokens) and depth > 0:
+                    if block_tokens[ip][0] == "BLOCKOPEN":
+                        depth += 1
+                    elif block_tokens[ip][0] == "BLOCKCLOSE":
+                        depth -= 1
+                    ip += 1
+                if depth != 0:
+                    raise RuntimeError("Unmatched { for WHILE body")
+                end_body = ip - 1   # index of the closing }
+                while_body = block_tokens[start_body:end_body]
+
+                # Evaluate the condition and keep looping while it is true.
+                while True:
+                    left_val  = resolve_value(left_tok[1])
+                    right_val = resolve_value(right_tok[1])
+                    op_type = op_tok[0]
+                    if op_type == "EQUALS":
+                        cond = left_val == right_val
+                    elif op_type == "NOTEQUALS":
+                        cond = left_val != right_val
+                    elif op_type == "GREATERTHAN":
+                        cond = left_val > right_val
+                    elif op_type == "LESSTHAN":
+                        cond = left_val < right_val
+                    else:
+                        raise RuntimeError("Unknown comparison operator")
+
+                    if not cond:
+                        break
+                    _execute(while_body, scope)
+                # ip already points just past the whole WHILE construct
+                continue
+
+            # ---------- FORLOOP ())<>>(() ----------
+            elif ttype == "FORLOOP":
+                # Expect a variable name (a LITERAL token) that holds the count.
+                if ip + 1 >= len(block_tokens):
+                    raise RuntimeError("FORLOOP missing variable")
+                var_tok = block_tokens[ip + 1]
+                if var_tok[0] != "LITERAL":
+                    raise RuntimeError("FORLOOP variable must be a literal")
+                var_name = var_tok[1]
+                count_val = resolve_value(var_name)
+                if not isinstance(count_val, int):
+                    raise RuntimeError("FORLOOP count must be an integer")
+                ip += 2  # skip the FORLOOP keyword and the variable
+
+                # The FOR body must be surrounded by { ... }
+                if ip >= len(block_tokens) or block_tokens[ip][0] != "BLOCKOPEN":
+                    raise RuntimeError("Expected { after FORLOOP variable")
+                ip += 1  # skip the opening {
+                start_body = ip
+
+                depth = 1
+                while ip < len(block_tokens) and depth > 0:
+                    if block_tokens[ip][0] == "BLOCKOPEN":
+                        depth += 1
+                    elif block_tokens[ip][0] == "BLOCKCLOSE":
+                        depth -= 1
+                    ip += 1
+                if depth != 0:
+                    raise RuntimeError("Unmatched { for FORLOOP body")
+                end_body = ip - 1
+                for_body = block_tokens[start_body:end_body]
+
+                # Execute the body exactly count_val times.
+                for _ in range(count_val):
+                    _execute(for_body, scope)
+                # ip already points past the FORLOOP construct
+                continue
 
             # ---------- IF (:3) with optional ELSE (UwU) ----------
             elif ttype == "IF":
@@ -235,14 +330,33 @@ def run(tokens):
                 # An ELSE token without a preceding IF is illegal.
                 raise RuntimeError("Unexpected ELSE without matching IF")
 
+            # ---------- REVERSECODE (peepee) ----------
+            elif ttype == "REVERSECODE":
+                if not top_level:
+                    raise SyntaxError("REVERSECODE can only appear at the top level")
+                # Signal the top‑level runner to reverse the token list and restart.
+                raise ReverseRequest
+
             # ---------- Anything else ----------
             else:
                 # For example, a stray literal that wasn't consumed by a command.
                 # We simply skip it.
                 ip += 1
 
-    # Start executing the whole program (the top-level token list).
-    _execute(tokens, variables)
+    # The top‑level runner catches ReverseRequest and restarts from the beginning.
+    while True:
+        try:
+            _execute(tokens, variables, top_level=True)
+            break   # normal termination
+        except ReverseRequest:
+            # Find the first REVERSECODE token in the global token list and remove it.
+            for i, (tt, _) in enumerate(tokens):
+                if tt == "REVERSECODE":
+                    del tokens[i]
+                    break
+            # Reverse the whole program and restart.
+            tokens.reverse()
+            # Variables are kept; execution resumes from the top.
 
 
 if __name__ == "__main__":
