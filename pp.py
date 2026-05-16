@@ -1,11 +1,33 @@
+# pp67 interpreter
+# This file reads a program written in the pp67 language and runs it.
+# pp67 is a tiny toy language.  The only source code that currently works
+# uses the tokens described in the tokenizer.
+
 import sys
 
 def tokenize(source):
-    """Convert pp67 source into a list of token tuples."""
-    # Merge multi‑word keywords so that they become single tokens
+    """
+    Convert pp67 source text into a list of token tuples.
+
+    Each token is a pair: (type, value).
+    Recognised token types:
+        PRINT, WHILELOOP, IF, ELSE, VARIABLE, FORLOOP,
+        BLOCKOPEN, BLOCKCLOSE,
+        EQUALS, NOTEQUALS, GREATERTHAN, LESSTHAN,
+        LITERAL  (everything else)
+
+    Special behaviour for LITERAL:
+    If a literal looks like a plain number, we subtract 1 from it
+    before storing it in the token list.  This is a quirk of pp67.
+    """
+    # Multi-word keyword "ding dong" is merged into a single token
+    # so the later simple split() can find it.
     source = source.replace("ding dong", "dingdong")
+
     result = []
+    # Split the source text on any whitespace to get individual tokens.
     for token in source.split():
+        # Check whether the token matches a known pp67 keyword.
         if token == "8==D":
             result.append(("PRINT", token))
         elif token == "(())":
@@ -31,7 +53,9 @@ def tokenize(source):
         elif token == "<":
             result.append(("LESSTHAN", token))
         else:
-            # LITERAL token: if it is a number, subtract 1 and store the result
+            # Any word that didn't match a keyword is treated as a LITERAL.
+            # If it can be interpreted as an integer, subtract 1 first
+            # then store the adjusted number as a string.
             try:
                 num = int(token)
                 adjusted = num - 1
@@ -42,13 +66,33 @@ def tokenize(source):
 
 
 def run(tokens):
-    """Execute the tokenised pp67 program."""
+    """
+    Execute the tokenised pp67 program.
+
+    We use a helper _execute that can be called recursively for
+    blocks inside IF/ELSE.
+    """
+    # variables = dictionary that holds all pp67 variables (global scope)
     variables = {}
 
     def _execute(block_tokens, scope):
-        ip = 0
+        """
+        Walk through a list of tokens and execute them one by one.
+
+        block_tokens : the list of tokens for the current block
+        scope        : a dictionary of variable values visible here
+        """
+        ip = 0   # instruction pointer – where we are in the token list
 
         def resolve_value(val):
+            """
+            Given a token value (a string), work out what it really means.
+
+            - If the string is a variable name that exists in 'scope',
+              use its stored value.
+            - Otherwise, if it can be turned into an integer, do so.
+            - Otherwise, just keep it as a string.
+            """
             if val in scope:
                 return scope[val]
             try:
@@ -56,29 +100,38 @@ def run(tokens):
             except ValueError:
                 return val
 
+        # Keep reading tokens until we reach the end of the block.
         while ip < len(block_tokens):
             ttype, tval = block_tokens[ip]
 
+            # ---------- PRINT ----------
             if ttype == "PRINT":
+                # The next token is the thing to print.
                 if ip + 1 >= len(block_tokens):
                     raise RuntimeError("No value to print")
                 next_type, next_val = block_tokens[ip + 1]
                 if next_type != "LITERAL":
                     raise RuntimeError("Invalid argument for PRINT")
+                # If the literal is a variable name, print its value.
+                # Otherwise print the literal itself.
                 if next_val in scope:
                     print(scope[next_val])
                 else:
                     print(next_val)
                 ip += 2
 
+            # ---------- VARIABLE (ding dong) ----------
             elif ttype == "VARIABLE":
+                # Expects: variable name, then value
                 if ip + 2 >= len(block_tokens):
                     raise RuntimeError("Missing variable name or value")
                 name_tok = block_tokens[ip + 1]
-                val_tok = block_tokens[ip + 2]
+                val_tok  = block_tokens[ip + 2]
                 if name_tok[0] != "LITERAL" or val_tok[0] != "LITERAL":
                     raise RuntimeError("Invalid variable definition")
                 name = name_tok[1]
+                # If the value looks like a number, store it as an integer,
+                # otherwise store the raw string.
                 try:
                     value = int(val_tok[1])
                 except ValueError:
@@ -86,29 +139,34 @@ def run(tokens):
                 scope[name] = value
                 ip += 3
 
+            # ---------- FORLOOP (peepee) ----------
             elif ttype == "FORLOOP":
-                # FORLOOP is defined but not yet implemented.
+                # FORLOOP is recognised but not yet implemented.
                 ip += 1
 
+            # ---------- WHILELOOP ((())) ----------
             elif ttype == "WHILELOOP":
-                # WHILELOOP is defined but not yet implemented.
+                # WHILELOOP is recognised but not yet implemented.
                 ip += 1
 
+            # ---------- IF (:3) with optional ELSE (UwU) ----------
             elif ttype == "IF":
-                # Condition occupies the next three tokens:
-                # left operand, operator, right operand
+                # The condition consumes the next three tokens:
+                #   left operand, comparison operator, right operand
                 if ip + 3 >= len(block_tokens):
                     raise RuntimeError("IF missing condition")
-                left_tok = block_tokens[ip + 1]
-                op_tok   = block_tokens[ip + 2]
+                left_tok  = block_tokens[ip + 1]
+                op_tok    = block_tokens[ip + 2]
                 right_tok = block_tokens[ip + 3]
 
                 if left_tok[0] != "LITERAL" or right_tok[0] != "LITERAL":
                     raise RuntimeError("Invalid condition operands")
 
-                left_val = resolve_value(left_tok[1])
+                # Turn the operands into real values (possibly variable lookups).
+                left_val  = resolve_value(left_tok[1])
                 right_val = resolve_value(right_tok[1])
 
+                # Decide whether the condition is true or false.
                 op_type = op_tok[0]
                 if op_type == "EQUALS":
                     cond = left_val == right_val
@@ -121,15 +179,15 @@ def run(tokens):
                 else:
                     raise RuntimeError("Unknown comparison operator")
 
-                ip += 4  # skip past condition tokens
+                ip += 4  # move instruction pointer past the condition tokens
 
-                # Expect opening brace
+                # The IF body must be surrounded by { ... }
                 if ip >= len(block_tokens) or block_tokens[ip][0] != "BLOCKOPEN":
                     raise RuntimeError("Expected { after IF condition")
-                ip += 1  # skip {
+                ip += 1  # skip the opening {
                 start_if = ip
 
-                # Find matching closing brace
+                # Find the matching closing } for the IF body.
                 depth = 1
                 while ip < len(block_tokens) and depth > 0:
                     if block_tokens[ip][0] == "BLOCKOPEN":
@@ -139,16 +197,16 @@ def run(tokens):
                     ip += 1
                 if depth != 0:
                     raise RuntimeError("Unmatched { for IF body")
-                end_if = ip - 1  # index of the closing }
+                end_if = ip - 1   # index of the closing }
                 if_block = block_tokens[start_if:end_if]
 
-                # Optional ELSE branch
+                # Check for an optional ELSE branch (UwU { ... })
                 else_block = None
                 if ip < len(block_tokens) and block_tokens[ip][0] == "ELSE":
-                    ip += 1  # consume UwU
+                    ip += 1  # consume the UwU token
                     if ip >= len(block_tokens) or block_tokens[ip][0] != "BLOCKOPEN":
                         raise RuntimeError("Expected { after else")
-                    ip += 1  # skip {
+                    ip += 1  # skip the opening {
                     start_else = ip
                     depth_else = 1
                     while ip < len(block_tokens) and depth_else > 0:
@@ -162,27 +220,34 @@ def run(tokens):
                     end_else = ip - 1
                     else_block = block_tokens[start_else:end_else]
 
-                # Execute the appropriate branch
+                # Run the correct branch.
                 if cond:
                     _execute(if_block, scope)
                 elif else_block is not None:
                     _execute(else_block, scope)
 
-                # ip already points just past the whole IF/ELSE construct
+                # The instruction pointer is now right after the whole IF/ELSE
+                # construct, so just continue to the next loop iteration.
                 continue
 
+            # ---------- ELSE (UwU) outside an IF ----------
             elif ttype == "ELSE":
-                # An ELSE token outside of an IF construct is illegal
+                # An ELSE token without a preceding IF is illegal.
                 raise RuntimeError("Unexpected ELSE without matching IF")
 
+            # ---------- Anything else ----------
             else:
-                # Stray tokens (e.g. an unused literal) are ignored.
+                # For example, a stray literal that wasn't consumed by a command.
+                # We simply skip it.
                 ip += 1
 
+    # Start executing the whole program (the top-level token list).
     _execute(tokens, variables)
 
 
 if __name__ == "__main__":
+    # The name of the pp67 source file is "mainturd.pp" by default.
+    # You can pass a different filename on the command line.
     filename = "mainturd.pp"
     if len(sys.argv) > 1:
         filename = sys.argv[1]
