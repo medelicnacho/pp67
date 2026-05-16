@@ -26,6 +26,55 @@
 # OOP additions are explained with comments inside the functions below.
 
 import sys
+import re
+
+
+def apply_dildo(source):
+    """
+    Pre‑process the raw source string by handling every pair of
+    `dildo` tokens.
+
+    The function finds each occurrence of the keyword `dildo` as a
+    whitespace‑delimited token.  For each pair of consecutive `dildo`
+    tokens it replaces the whole sequence
+
+        dildo <inner> dildo
+
+    with the character‑reversed version of `<inner>`.
+
+    If there is an odd number of `dildo` tokens in the source the
+    function raises a RuntimeError with the message
+    "Unclosed LOCALREVERSE", because every opening `dildo` must have
+    a matching closing one.
+    """
+    # Match `dildo` as a whole word surrounded by whitespace or
+    # start/end of string.
+    pattern = r'(?<!\S)dildo(?!\S)'
+    matches = list(re.finditer(pattern, source))
+
+    if len(matches) % 2 != 0:
+        raise RuntimeError("Unclosed LOCALREVERSE")
+
+    out = []
+    pos = 0
+    for i in range(0, len(matches), 2):
+        first  = matches[i]
+        second = matches[i + 1]
+
+        # copy everything before the first `dildo` of this pair
+        out.append(source[pos:first.start()])
+
+        # characters between the end of the first `dildo` and the
+        # start of the second `dildo` – these are the tokens that
+        # will be character‑reversed.
+        inner = source[first.end():second.start()]
+        out.append(inner[::-1])
+
+        pos = second.end()
+
+    # append whatever follows the last closing `dildo`
+    out.append(source[pos:])
+    return ''.join(out)
 
 
 def tokenize(source):
@@ -745,5 +794,9 @@ if __name__ == "__main__":
         filename = sys.argv[1]
     with open(filename, "r") as f:
         source = f.read()
+
+    # Pre‑process dildo pairs before any tokenization happens.
+    source = apply_dildo(source)
+
     tokens = tokenize(source)
     run(tokens)
