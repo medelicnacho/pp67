@@ -13,13 +13,14 @@
 #      the actions defined by each keyword
 #
 # Execution order rule (the *pp67 reversal rule*):
+#   • The interpreter **always** starts by reversing the statement order
+#     (so it begins execution at the end of the source file).
 #   • If the very first token is `peepee` (the REVERSECODE marker),
-#     that marker is removed and the program runs **forwards**
-#     (top‑to‑bottom in the source file).
-#   • If the first token is **not** `peepee`, the statement order is
-#     **reversed** first, then executed.  Reversing at the statement
-#     level keeps each `{ }` block together, so the logic inside a block
-#     stays in its original order.
+#     the statement order is reversed **a second time**, which effectively
+#     cancels the default reversal and makes the program run forwards
+#     (top‑to‑bottom, like a normal language).
+#   • The `peepee` marker itself is kept in the token list, but at the
+#     top level it is silently ignored.
 #
 # All the existing keywords, the `peepee` reversal system, and the
 # OOP additions are explained with comments inside the functions below.
@@ -523,10 +524,16 @@ def run(tokens):
                 raise RuntimeError("Unexpected ELSE without matching IF")
 
             # ============================================================
-            #   REVERSECODE (keyword: peepee) – only allowed at top level.
-            #   Inside a block it is an error.
+            #   REVERSECODE (keyword: peepee)
+            # ------------------------------------------------------------
+            # At the top level it is simply skipped (it may have been
+            # kept after the double‑reversal).  Inside any block it is
+            # an error.
             # ============================================================
             elif ttype == "REVERSECODE":
+                if top_level:
+                    ip += 1
+                    continue
                 raise RuntimeError("Unexpected REVERSECODE inside a block")
 
             # ============================================================
@@ -712,18 +719,17 @@ def run(tokens):
                 ip += 1
 
     # ====================================================================
-    # TOP‑LEVEL EXECUTION – pp67 reversal rule
+    # TOP‑LEVEL EXECUTION – pp67 reversal rule (double‑reversal for peepee)
     # ====================================================================
+    # 1. Always group into statements and reverse once (run from bottom).
+    stmts = _build_statements(tokens)
+    stmts.reverse()
+    # 2. If the first token is REVERSECODE (peepee), reverse again.
+    #    This cancels the initial reversal → program runs top‑to‑bottom.
     if tokens and tokens[0][0] == "REVERSECODE":
-        # The program starts with "peepee" → run forwards.
-        del tokens[0]               # remove the REVERSECODE marker
-        final_tokens = tokens       # keep the original order
-    else:
-        # No "peepee" → first group into statements,
-        # then reverse the statement order, then flatten.
-        stmts = _build_statements(tokens)
         stmts.reverse()
-        final_tokens = [tok for stmt in stmts for tok in stmt]
+    # 3. Flatten back to a single token list.
+    final_tokens = [tok for stmt in stmts for tok in stmt]
 
     # Everything is ready – hand the final token list to the recursive executor.
     _execute(final_tokens, variables, top_level=True)
