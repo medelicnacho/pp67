@@ -29,54 +29,6 @@ import sys
 import re
 
 
-def apply_dildo(source):
-    """
-    Pre‑process the raw source string by handling every pair of
-    `dildo` tokens.
-
-    The function finds each occurrence of the keyword `dildo` as a
-    whitespace‑delimited token.  For each pair of consecutive `dildo`
-    tokens it replaces the whole sequence
-
-        dildo <inner> dildo
-
-    with the character‑reversed version of `<inner>`.
-
-    If there is an odd number of `dildo` tokens in the source the
-    function raises a RuntimeError with the message
-    "Unclosed LOCALREVERSE", because every opening `dildo` must have
-    a matching closing one.
-    """
-    # Match `dildo` as a whole word surrounded by whitespace or
-    # start/end of string.
-    pattern = r'(?<!\S)dildo(?!\S)'
-    matches = list(re.finditer(pattern, source))
-
-    if len(matches) % 2 != 0:
-        raise RuntimeError("Unclosed LOCALREVERSE")
-
-    out = []
-    pos = 0
-    for i in range(0, len(matches), 2):
-        first  = matches[i]
-        second = matches[i + 1]
-
-        # copy everything before the first `dildo` of this pair
-        out.append(source[pos:first.start()])
-
-        # characters between the end of the first `dildo` and the
-        # start of the second `dildo` – these are the tokens that
-        # will be character‑reversed.
-        inner = source[first.end():second.start()]
-        out.append(inner[::-1])
-
-        pos = second.end()
-
-    # append whatever follows the last closing `dildo`
-    out.append(source[pos:])
-    return ''.join(out)
-
-
 def tokenize(source):
     """
     Convert pp67 source text into a list of token tuples.
@@ -168,6 +120,47 @@ def tokenize(source):
     return result
 
 
+def resolve_dildo_tokens(tokens):
+    """
+    Pre‑pass that consumes every LOCALREVERSE token **before** the
+    statement‑builder sees them.
+
+    For each opening LOCALREVERSE token the function finds its closing
+    partner (the very next LOCALREVERSE token).  The tokens *between*
+    the two markers are joined into a single string using their raw
+    representations, the string is character‑reversed, re‑tokenised,
+    and inserted in place of the whole `dildo … dildo` span.
+
+    After this pass the returned token list contains no LOCALREVERSE
+    tokens at all, and the original LOCALREVERSE handling logic inside
+    `_execute` and `_build_statements` is no longer needed.
+    """
+    out = []
+    i = 0
+    while i < len(tokens):
+        if tokens[i][0] == "LOCALREVERSE":
+            # Find the matching closing LOCALREVERSE token.
+            j = i + 1
+            while j < len(tokens) and tokens[j][0] != "LOCALREVERSE":
+                j += 1
+            if j >= len(tokens):
+                raise RuntimeError("Unclosed LOCALREVERSE")
+            # Everything between the two markers is the text to reverse.
+            inner = tokens[i+1:j]
+            # Reconstruct the original raw text so that we can
+            # character‑reverse it exactly.
+            raw = " ".join(tok[2] for tok in inner)
+            rev_raw = raw[::-1]
+            # Tokenise the character‑reversed segment.
+            rev_tokens = tokenize(rev_raw)
+            out.extend(rev_tokens)
+            i = j + 1
+        else:
+            out.append(tokens[i])
+            i += 1
+    return out
+
+
 def run(tokens):
     """
     Execute the tokenised pp67 program.
@@ -185,7 +178,10 @@ def run(tokens):
     """
     # variables = dictionary that holds all pp67 variables (global scope)
     variables = {}
-    # OOP support: store class blueprints keyed by class name
+    # OOP support: store class blueprints keyed by class name.
+    # Each entry is now a dict with keys:
+    #   'body'   : list of tokens forming the class body
+    #   'parent' : str | None  (name of the parent class, if any)
     class_defs = {}
 
     def _build_statements(tokens):
@@ -251,18 +247,6 @@ def run(tokens):
                 ops = 2            # instance name, method name
                 block = False
                 else_ = False
-            elif tt == "LOCALREVERSE":
-                # Gather everything up to the matching closing LOCALREVERSE
-                # token.  The whole stretch becomes one statement.
-                depth = 1
-                while ip < len(tokens) and depth > 0:
-                    if tokens[ip][0] == "LOCALREVERSE":
-                        depth -= 1
-                    ip += 1
-                if depth != 0:
-                    raise RuntimeError("Unclosed LOCALREVERSE")
-                stmts.append(tokens[start:ip])
-                continue
             else:
                 # Any token that we don't recognise as a keyword is
                 # treated as a stray literal.  We keep it as a
@@ -586,35 +570,19 @@ def run(tokens):
                 raise RuntimeError("Unexpected REVERSECODE inside a block")
 
             # ============================================================
-            #   LOCALREVERSE (keyword: dildo ... dildo)
-            # ------------------------------------------------------------
-            # Collects every token between two `dildo` markers as a raw
-            # string, reverses the *characters* of that whole string,
-            # re‑tokenizes it, and executes the result.
-            # This is a *character‑level* reversal, not statement‑level.
-            # ============================================================
-            elif ttype == "LOCALREVERSE":
-                j = ip + 1
-                while j < len(block_tokens) and block_tokens[j][0] != "LOCALREVERSE":
-                    j += 1
-                if j >= len(block_tokens):
-                    raise RuntimeError("Unclosed LOCALREVERSE")
-                inner_tokens = block_tokens[ip + 1 : j]
-                # Reconstruct the original source text from raw token strings.
-                raw_source = " ".join(tok[2] for tok in inner_tokens)
-                reversed_source = raw_source[::-1]
-                reversed_tokens = tokenize(reversed_source)
-                _execute(reversed_tokens, scope)
-                ip = j + 1
-                continue
-
-            # ============================================================
             #   CLASSDEF (keyword: kcidyeknodimsoc)
             # ------------------------------------------------------------
             # Reads a class name (LITERAL) and a `{ }` block.
-            # The class body is stored as a blueprint in `class_defs`.
-            # When an instance is later created with INSTANTIATE,
-            # this blueprint gets executed inside a fresh scope.
+            # The class body is stored as a blueprint inside `class_defs`,
+            # together with an optional parent name.
+            #
+            # *Inheritance detection*:
+            #   While scanning the body tokens we look for a LITERAL
+            #   token that contains a dot.  Its character‑reversed
+            #   form should match `<Parent>.<Child>` where `<Child>`
+            #   equals the current `class_name`.  If found we record
+            #   `Parent` and strip the token from the stored body so
+            #   it is not executed during instantiation.
             # ============================================================
             elif ttype == "CLASSDEF":
                 if ip + 1 >= len(block_tokens):
@@ -639,7 +607,30 @@ def run(tokens):
                     raise RuntimeError("Unmatched { for class body")
                 end_body = ip - 1
                 class_body = block_tokens[start_body:end_body]
-                class_defs[class_name] = class_body
+
+                # --- inherit detection ---
+                parent = None
+                filtered_body = []
+                for tok in class_body:
+                    if tok[0] == "LITERAL" and "." in tok[1]:
+                        # The token may be a character‑reversed
+                        # inherit line such as `goD.laminA`.
+                        rev = tok[1][::-1]          # e.g. "Animal.Dog"
+                        if "." in rev and rev.split(".")[-1] == class_name:
+                            if parent is not None:
+                                raise RuntimeError(
+                                    "Multiple inheritance lines for class "
+                                    + class_name
+                                )
+                            parent = rev.split(".")[0]
+                            # Do NOT keep this token in the body.
+                            continue
+                    filtered_body.append(tok)
+
+                class_defs[class_name] = {
+                    "body": filtered_body,
+                    "parent": parent,
+                }
                 ip = end_body + 1
                 continue
 
@@ -681,9 +672,10 @@ def run(tokens):
             # ------------------------------------------------------------
             # Creates an instance of a previously defined class.
             # It looks up the class blueprint in `class_defs`,
-            # executes it inside a fresh scope (so that variables
-            # defined in the class become instance properties), and
-            # stores that scope under the instance name.
+            # resolves the parent chain (if any), and executes the
+            # bodies from root ancestor to child in order, each
+            # inside the same fresh scope, so that properties and
+            # methods defined in ancestors are inherited.
             # ============================================================
             elif ttype == "INSTANTIATE":
                 if ip + 2 >= len(block_tokens):
@@ -694,11 +686,33 @@ def run(tokens):
                     raise RuntimeError("Invalid arguments for INSTANTIATE")
                 class_name = class_tok[1]
                 instance_var = inst_tok[1]
-                class_body = class_defs.get(class_name)
-                if class_body is None:
+
+                class_rec = class_defs.get(class_name)
+                if class_rec is None:
                     raise RuntimeError(f"Class '{class_name}' not defined")
+                if not isinstance(class_rec, dict):
+                    raise RuntimeError("Class definition is corrupted")
+
+                # Build the ancestor chain (root first, child last)
+                def _chain(name, seen):
+                    if name in seen:
+                        raise RuntimeError("Circular inheritance detected")
+                    rec = class_defs.get(name)
+                    if rec is None:
+                        raise RuntimeError(f"Class '{name}' not found")
+                    chain = []
+                    parent = rec.get("parent")
+                    if parent:
+                        chain = _chain(parent, seen | {name})
+                    chain.append(rec)
+                    return chain
+
+                chain = _chain(class_name, set())
+
                 instance_scope = {}
-                _execute(class_body, instance_scope)
+                for rec in chain:
+                    _execute(rec["body"], instance_scope)
+
                 scope[instance_var] = instance_scope
                 ip += 3
                 continue
@@ -795,8 +809,13 @@ if __name__ == "__main__":
     with open(filename, "r") as f:
         source = f.read()
 
-    # Pre‑process dildo pairs before any tokenization happens.
-    source = apply_dildo(source)
-
+    # Tokenise the raw source (no pre‑processor).
     tokens = tokenize(source)
+
+    # Resolve all dildo (LOCALREVERSE) pairs at the token level
+    # so that later stages see a clean stream without LOCALREVERSE
+    # tokens.  This handles OOP keywords that appear inside dildo
+    # blocks exactly the same as every other keyword.
+    tokens = resolve_dildo_tokens(tokens)
+
     run(tokens)
