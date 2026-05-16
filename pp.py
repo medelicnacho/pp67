@@ -31,7 +31,13 @@ def tokenize(source):
         elif token == "<":
             result.append(("LESSTHAN", token))
         else:
-            result.append(("LITERAL", token))
+            # LITERAL token: if it is a number, subtract 1 and store the result
+            try:
+                num = int(token)
+                adjusted = num - 1
+                result.append(("LITERAL", str(adjusted)))
+            except ValueError:
+                result.append(("LITERAL", token))
     return result
 
 
