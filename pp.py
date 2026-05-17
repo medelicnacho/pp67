@@ -1,32 +1,28 @@
 # pp67 interpreter
-# ========================================================================
-# This program reads a source file written in the ***pp67*** toy language
-# and executes it.  pp67 is designed for learning: every instruction is a
-# quirky keyword and the whole language runs in a simple while‑loop with a
-# variable‑scope dictionary.
 #
-# The interpreter does three things in order:
-#   1. tokenize  – turn the source text into a flat list of token tuples
-#   2. group top‑level tokens into **statements** (one keyword plus its
-#      operands and any attached `{ }` block, treated as an atomic unit)
-#   3. execute   – walk the token list (possibly reversed) and perform
-#      the actions defined by each keyword
-#
-# Execution order rule (the *pp67 reversal rule*):
-#   • The interpreter **always** starts by reversing the statement order
-#     (so it begins execution at the end of the source file).
-#   • If the very first token is `peepee` (the REVERSECODE marker),
-#     the statement order is reversed **a second time**, which effectively
-#     cancels the default reversal and makes the program run forwards
-#     (top‑to‑bottom, like a normal language).
-#   • The `peepee` marker itself is kept in the token list, but at the
-#     top level it is silently ignored.
-#
-# All the existing keywords, the `peepee` reversal system, and the
-# OOP additions are explained with comments inside the functions below.
+# Pipeline:  preprocess (flip) -> tokenize (label) -> resolve_dildos (unwrap OOP) -> run (execute)
+# Reversal:  lines bottom-to-top, words right-to-left.  No opt-out.
+# Number offset:  you write N, pp67 stores N-1.  Not a bug.
 
 import sys
 import re
+
+
+def preprocess(source):
+    """Reverse line order and word order.
+
+    pp67 reads code backwards: the last line executes first and words on
+    each line are read right-to-left.  The programmer writes normally.
+    This flips both axes so the tokeniser sees normal top-to-bottom,
+    left-to-right order.
+    """
+    lines = source.split('\n')
+    lines.reverse()
+    result = []
+    for line in lines:
+        tokens = line.split()
+        result.append(' '.join(reversed(tokens)) if tokens else '')
+    return '\n'.join(result)
 
 
 def tokenize(source):
@@ -41,9 +37,10 @@ def tokenize(source):
 
     Recognised token types (case‑sensitive):
         PRINT, WHILELOOP, IF, ELSE, VARIABLE, FORLOOP,
-        REVERSECODE, LOCALREVERSE,
+        LOCALREVERSE,
         BLOCKOPEN, BLOCKCLOSE,
         EQUALS, NOTEQUALS, GREATERTHAN, LESSTHAN,
+        PLUS, MINUS, MULTIPLY, DIVIDE,
         CLASSDEF, FUNCDEF, INSTANTIATE, SNIFF, HUMP,
         LITERAL  (everything else)
 
@@ -57,8 +54,8 @@ def tokenize(source):
     #    a simple whitespace split() can find them.
     # ----------------------------------------------------------------
     source = source.replace("ding dong", "dingdong")
-    source = source.replace("))<>>((", "forloop")
-    source = source.replace("deeznutz", "EQUALS")
+    source = source.replace("))<>((", "forloop")
+    
 
     result = []
     # ----------------------------------------------------------------
@@ -78,10 +75,8 @@ def tokenize(source):
             result.append(("VARIABLE", token, token))
         elif token == "forloop":
             result.append(("FORLOOP", token, token))
-        elif token == "EQUALS":
+        elif token == "deeznutz":
             result.append(("EQUALS", token, token))
-        elif token == "peepee":
-            result.append(("REVERSECODE", token, token))
         elif token == "dildo":
             result.append(("LOCALREVERSE", token, token))
         elif token == "{":
@@ -107,6 +102,14 @@ def tokenize(source):
             result.append(("SNIFF", token, token))
         elif token == "pmuh.yeknod":
             result.append(("HUMP", token, token))
+        elif token == "diarea":
+            result.append(("PLUS", token, token))
+        elif token == "farticles":
+            result.append(("MINUS", token, token))
+        elif token == "ballzdeep":
+            result.append(("MULTIPLY", token, token))
+        elif token == "analcannon9000":
+            result.append(("DIVIDE", token, token))
         else:
             # ---------- Anything else is a LITERAL ----------
             raw = token
@@ -162,19 +165,11 @@ def resolve_dildo_tokens(tokens):
 
 
 def run(tokens):
-    """
-    Execute the tokenised pp67 program.
+    """Set up storage and hand control to the executor.
 
-    The execution happens in three stages:
-      1. Determine whether to reverse the program (pp67 reversal rule).
-      2. Group the tokens into top‑level **statements** so that the
-         reversal is applied statement‑by‑statement, keeping each
-         `{ }` block intact.
-      3. Call the recursive helper `_execute` on the resulting
-         flat token list.
-
-    The helper `_execute` may call itself for blocks inside
-    IF/ELSE, WHILELOOP, FORLOOP, and OOP constructs.
+    What: creates the global variable dictionary and class blueprint
+    dictionary, then calls _execute with the full token list.
+    Why: initialises program memory before execution.
     """
     # variables = dictionary that holds all pp67 variables (global scope)
     variables = {}
@@ -184,128 +179,7 @@ def run(tokens):
     #   'parent' : str | None  (name of the parent class, if any)
     class_defs = {}
 
-    def _build_statements(tokens):
-        """
-        Group the flat token list into top‑level **statements**.
 
-        A "statement" is one keyword together with all its operands AND
-        any attached `{ }` block (including nested braces).  We need
-        this grouping because the reversal rule works on statements,
-        not on individual tokens.  Reversing tokens directly would flip
-        `{` and `}` which would corrupt the program.
-
-        For each keyword we know how many **operand** tokens follow
-        and whether it expects a mandatory `{ }` block and an
-        optional ELSE branch.
-        """
-        ip = 0
-        stmts = []
-        while ip < len(tokens):
-            start = ip
-            tt = tokens[ip][0]
-            ip += 1  # move past the keyword token
-
-            # Determine how many operands this keyword expects
-            # and whether it needs a block.
-            if tt == "PRINT":
-                ops = 1            # one operand (what to print)
-                block = False
-                else_ = False
-            elif tt == "VARIABLE":
-                ops = 2            # variable name, value
-                block = False
-                else_ = False
-            elif tt == "WHILELOOP":
-                ops = 3            # left, operator, right (condition)
-                block = True
-                else_ = False
-            elif tt == "FORLOOP":
-                ops = 1            # count variable
-                block = True
-                else_ = False
-            elif tt == "IF":
-                ops = 3            # left, operator, right
-                block = True
-                else_ = True       # may have an ELSE branch
-            elif tt == "CLASSDEF":
-                ops = 1            # class name
-                block = True
-                else_ = False
-            elif tt == "FUNCDEF":
-                ops = 1            # function name
-                block = True
-                else_ = False
-            elif tt == "INSTANTIATE":
-                ops = 2            # class name, instance name
-                block = False
-                else_ = False
-            elif tt == "SNIFF":
-                ops = 2            # instance name, property name
-                block = False
-                else_ = False
-            elif tt == "HUMP":
-                ops = 2            # instance name, method name
-                block = False
-                else_ = False
-            else:
-                # Any token that we don't recognise as a keyword is
-                # treated as a stray literal.  We keep it as a
-                # single‑token statement so that the reversal step
-                # still sees it.
-                stmts.append([tokens[start]])
-                continue
-
-            # ------------------------------------------------------------
-            # Consume operands (just skip over them – they are validated
-            # later during execution).
-            # ------------------------------------------------------------
-            for _ in range(ops):
-                if ip >= len(tokens):
-                    raise RuntimeError(f"Not enough operands for {tt}")
-                ip += 1
-
-            # ------------------------------------------------------------
-            # Consume the mandatory `{ }` block, if any.
-            # ------------------------------------------------------------
-            if block:
-                if ip >= len(tokens) or tokens[ip][0] != "BLOCKOPEN":
-                    raise RuntimeError(f"Expected {{ after {tt}")
-                depth = 1
-                ip += 1  # skip the opening {
-                while ip < len(tokens) and depth > 0:
-                    if tokens[ip][0] == "BLOCKOPEN":
-                        depth += 1
-                    elif tokens[ip][0] == "BLOCKCLOSE":
-                        depth -= 1
-                    ip += 1
-                if depth != 0:
-                    raise RuntimeError(f"Unmatched {{ for {tt}")
-
-            # ------------------------------------------------------------
-            # If the keyword supports an optional ELSE branch,
-            # consume it now so that IF+ELSE stays as **one** statement.
-            # ------------------------------------------------------------
-            if else_:
-                if ip < len(tokens) and tokens[ip][0] == "ELSE":
-                    ip += 1  # skip the ELSE token
-                    if ip >= len(tokens) or tokens[ip][0] != "BLOCKOPEN":
-                        raise RuntimeError("Expected { after ELSE")
-                    depth = 1
-                    ip += 1
-                    while ip < len(tokens) and depth > 0:
-                        if tokens[ip][0] == "BLOCKOPEN":
-                            depth += 1
-                        elif tokens[ip][0] == "BLOCKCLOSE":
-                            depth -= 1
-                        ip += 1
-                    if depth != 0:
-                        raise RuntimeError("Unmatched { for ELSE")
-
-            # All tokens from `start` up to (but not including) `ip`
-            # form one complete statement.
-            stmts.append(tokens[start:ip])
-
-        return stmts
 
     def _execute(block_tokens, scope, top_level=False):
         """
@@ -556,18 +430,32 @@ def run(tokens):
             elif ttype == "ELSE":
                 raise RuntimeError("Unexpected ELSE without matching IF")
 
-            # ============================================================
-            #   REVERSECODE (keyword: peepee)
-            # ------------------------------------------------------------
-            # At the top level it is simply skipped (it may have been
-            # kept after the double‑reversal).  Inside any block it is
-            # an error.
-            # ============================================================
-            elif ttype == "REVERSECODE":
-                if top_level:
-                    ip += 1
-                    continue
-                raise RuntimeError("Unexpected REVERSECODE inside a block")
+            # --- MATH ---  + - * //  (diarea / farticles / ballzdeep / analcannon9000)
+            elif ttype in ("PLUS", "MINUS", "MULTIPLY", "DIVIDE"):
+                if ip + 3 >= len(block_tokens):
+                    raise RuntimeError(f"{ttype} missing operands")
+                result_tok = block_tokens[ip + 1]
+                left_tok   = block_tokens[ip + 2]
+                right_tok  = block_tokens[ip + 3]
+                if result_tok[0] != "LITERAL" or left_tok[0] != "LITERAL" or right_tok[0] != "LITERAL":
+                    raise RuntimeError("Invalid math operands")
+                result_name = result_tok[1]
+                left_val    = resolve_value(left_tok[1])
+                right_val   = resolve_value(right_tok[1])
+                if not isinstance(left_val, int) or not isinstance(right_val, int):
+                    raise RuntimeError("Math operands must be numbers")
+                if ttype == "PLUS":
+                    scope[result_name] = left_val + right_val
+                elif ttype == "MINUS":
+                    scope[result_name] = left_val - right_val
+                elif ttype == "MULTIPLY":
+                    scope[result_name] = left_val * right_val
+                elif ttype == "DIVIDE":
+                    if right_val == 0:
+                        raise RuntimeError("analcannon9000 by zero")
+                    scope[result_name] = left_val // right_val
+                ip += 4
+                continue
 
             # ============================================================
             #   CLASSDEF (keyword: kcidyeknodimsoc)
@@ -785,17 +673,7 @@ def run(tokens):
     # TOP‑LEVEL EXECUTION – pp67 reversal rule (double‑reversal for peepee)
     # ====================================================================
     # 1. Always group into statements and reverse once (run from bottom).
-    stmts = _build_statements(tokens)
-    stmts.reverse()
-    # 2. If the first token is REVERSECODE (peepee), reverse again.
-    #    This cancels the initial reversal → program runs top‑to‑bottom.
-    if tokens and tokens[0][0] == "REVERSECODE":
-        stmts.reverse()
-    # 3. Flatten back to a single token list.
-    final_tokens = [tok for stmt in stmts for tok in stmt]
-
-    # Everything is ready – hand the final token list to the recursive executor.
-    _execute(final_tokens, variables, top_level=True)
+    _execute(tokens, variables, top_level=True)
 
 
 if __name__ == "__main__":
@@ -809,7 +687,8 @@ if __name__ == "__main__":
     with open(filename, "r") as f:
         source = f.read()
 
-    # Tokenise the raw source (no pre‑processor).
+    source = preprocess(source)
+
     tokens = tokenize(source)
 
     # Resolve all dildo (LOCALREVERSE) pairs at the token level
